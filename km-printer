@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# km-printer - small helper for the Konica Minolta bizhub C3851
+#   km-printer status   queue + jobs
+#   km-printer find     locate the printer on the network
+#   km-printer web      open the printer's settings page
+#   km-printer fix      re-point the queue at the printer's current address
+#   km-printer test     print a test page
+set -uo pipefail
+
+PRINTER="KM-C3851"
+IFACE="enp0s25"
+LINK_NET="10.42.0"
+
+probe(){ timeout 0.5 bash -c "echo >/dev/tcp/$1/$2" 2>/dev/null; }
+ip_of(){ sed -E 's#^[a-z]+://([^/:]+).*#\1#'; }
+
+find_uri(){
+    local uri ip
+    uri=$(ippfind -T 4 -r -p 2>/dev/null | grep -v '/printers/' \
+          | grep -viE 'localhost|127\.0\.0\.1' | head -n1)
+    [[ -n $uri ]] && { printf '%s\n' "$uri"; return 0; }
+    for ip in $(ip neigh show dev "$IFACE" 2>/dev/null | awk '{print $1}'); do
+        if probe "$ip" 631 || probe "$ip" 9100; then
+            printf 'ipp://%s/ipp/print\n' "$ip"; return 0
+        fi
+    done
+    return 1
+}
+
+case "${1:-status}" in
+    find)
+        find_uri || { echo "printer not found"; exit 1; }
+        ;;
+    status)
+        lpstat -d -p 2>&1
+        echo
+        echo "Device:"
+        lpstat -v 2>/dev/null
+        echo
+        echo "Jobs:"
+        lpstat -o 2>/dev/null | head -n 10
+        ;;
+    web)
+        uri=$(find_uri) || { echo "printer not found"; exit 1; }
+        xdg-open "http://$(ip_of <<<"$uri")/" >/dev/null 2>&1 &
+        echo "opening http://$(ip_of <<<"$uri")/"
+        ;;
+    fix)
+        uri=$(find_uri) || { echo "printer not found"; exit 1; }
+        sudo lpadmin -p "$PRINTER" -E -v "$uri" \
+            && echo "queue re-pointed to $uri"
+        ;;
+    test)
+        target=$(lpstat -d 2>/dev/null | sed -n 's/^system default destination: //p')
+        lpstat -p "$target" >/dev/null 2>&1 || target="$PRINTER"
+        lpstat -p "$target" >/dev/null 2>&1 || target="KM-C3851-USB"
+        tmp=$(mktemp --suffix=.txt)
+        {
+            echo "Konica Minolta bizhub C3851 - test page"
+            echo "host : $(hostname)"
+            echo "date : $(date)"
+        } > "$tmp"
+        lp -d "$target" -t "KM-C3851 test page" "$tmp" && echo "sent to $target"
+        rm -f "$tmp"
+        ;;
+    -h|--help|help)
+        sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+        exit 1
+        ;;
+esac
